@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Router de Venta AWERT</title>
+    <script src="https://cloudflare.com"></script>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: #eaeaea; }
+        .box { background: white; padding: 40px; border-radius: 8px; display: inline-block; min-width: 400px; box-shadow: 0 4px 10px rgba(0,0,0,0.15); }
+        input { padding: 12px; width: 80%; margin-bottom: 10px; border-radius: 5px; border: 1px solid #ccc; font-size: 16px; text-align: center; }
+        button { background: #007bff; color: white; border: none; padding: 12px 20px; border-radius: 5px; cursor: pointer; font-size: 14px; margin: 4px; font-weight: bold; }
+        button:hover { background: #0056b3; }
+        .net-btn { background: #6c757d; }
+        .net-btn:hover { background: #5a6268; }
+        .network-section { margin: 20px 0; padding: 15px; background: #f8f9fa; border-radius: 6px; border: 1px solid #ddd; }
+        .info { color: #666; font-size: 14px; margin-bottom: 20px; }
+        .pool-info { font-weight: bold; margin-bottom: 15px; color: #2e7d32; font-size: 15px; }
+        .alert-price { color: #c62828 !important; font-weight: bold; animation: blink 1.5s infinite; }
+        @keyframes blink { 50% { opacity: 0.6; } }
+    </style>
+</head>
+<body>
+
+<div class="box">
+    <h2>Comprar AWERT</h2>
+    <p class="info">Precio Inicial: 1 AWERT = 0.01 Moneda Nativa</p>
+    
+    <button id="walletBtn" onclick="initWallet()">1. Conectar Wallet</button>
+    
+    <div class="network-section">
+        <p style="margin: 0 0 10px 0; font-size: 14px; font-weight: bold;" id="network">2. Selecciona tu Red:</p>
+        <button class="net-btn" onclick="switchNetwork('ethereum')">Ethereum</button>
+        <button class="net-btn" onclick="switchNetwork('base')">Base</button>
+        <button class="net-btn" onclick="switchNetwork('bsc')">Binance (BSC)</button>
+        <button class="net-btn" onclick="switchNetwork('hedera')">Hedera EVM</button>
+    </div>
+    
+    <div id="swapForm" style="display:none;">
+        <div id="swapPoolDisplay" class="pool-info">Disponible en Swap: <span id="swapPoolAmount">0</span> AWERT</div>
+        <input type="number" id="tokenAmount" placeholder="Cantidad de AWERT a comprar" oninput="calculatePrice()">
+        <p id="priceCalc" style="font-weight: bold; margin-bottom: 15px;">Total a pagar: 0.00 Moneda Nativa</p>
+        <button onclick="buyTokens()" style="background:#28a745; width: 86%;">Comprar Ahora</button>
+    </div>
+    <p id="log" style="margin-top: 15px; font-weight: bold;"></p>
+</div>
+
+<script>
+    // IMPORTANTE: Pon la dirección de tu contrato desplegado en cada red
+    const contractAddresses = {
+        '1': 'DIRECCION_CONTRATO_ETHEREUM',
+        '8453': 'DIRECCION_CONTRATO_BASE',
+        '56': 'DIRECCION_CONTRATO_BSC',
+        '295': 'DIRECCION_CONTRATO_HEDERA'
+    };
+
+    const networks = {
+        ethereum: { chainId: '0x1', chainName: 'Ethereum Mainnet' },
+        base: {
+            chainId: '0x2105',
+            chainName: 'Base',
+            nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+            rpcUrls: ['https://base.org'],
+            blockExplorerUrls: ['https://basescan.org']
+        },
+        bsc: {
+            chainId: '0x38',
+            chainName: 'BNB Smart Chain',
+            nativeCurrency: { name: 'BNB', symbol: 'BNB', decimals: 18 },
+            rpcUrls: ['https://binance.org'],
+            blockExplorerUrls: ['https://bscscan.com']
+        },
+        hedera: {
+            chainId: '0x127',
+            chainName: 'Hedera Mainnet EVM',
+            nativeCurrency: { name: 'HBAR', symbol: 'HBAR', decimals: 18 },
+            rpcUrls: ['https://hashio.io'],
+            blockExplorerUrls: ['https://hashscan.io']
+        }
+    };
+    
+    const abi = [
+        "function buyTokens(uint256 amountOfTokens) public payable",
+        "function getCurrentPrice() public view returns (uint256)",
+        "function swapPool() public view returns (uint256)"
+    ]; 
+    let provider, signer, contract, currentChainId;
+
+    async function initWallet() {
+        if (typeof window.ethereum !== 'undefined') {
+            try {
+                await window.ethereum.request({ method: 'eth_requestAccounts' });
+                provider = new ethers.providers.Web3Provider(window.ethereum);
+                const networkInfo = await provider.getNetwork();
+                currentChainId = networkInfo.chainId.toString();
+                
+                signer = provider.getSigner();
+                const address = await signer.getAddress();
+                
+                document.getElementById('walletBtn').innerText = "Conectado: " + address.substring(0,6) + "...";
+                await updateContractInstance();
+            } catch (err) {
+                document.getElementById('log').innerText = "Error de conexión: " + err.message;
+            }
+        } else {
+            alert("Por favor instala MetaMask.");
+        }
+    }
+
+    async function switchNetwork(networkKey) {
+        if (!window.ethereum) return alert("MetaMask no detectado.");
+        const net = networks[networkKey];
+        
+        try {
+            await window.ethereum.request({
+                method: 'wallet_switchEthereumChain',
+                params: [{ chainId: net.chainId }],
+            });
+            setTimeout(initWallet, 500);
+        } catch (switchError) {
+            if (switchError.code === 4902 && networkKey !== 'ethereum') {
+                try {
+                    await window.ethereum.request({
+                        method: 'wallet_addEthereumChain',
+                        params: [net],
+                    });
+                    setTimeout(initWallet, 500);
+                } catch (addError) {
+                    document.getElementById('log').innerText = "Error al agregar red: " + addError.message;
+                }
+            } else {
+                document.getElementById('log').innerText = "Error al cambiar de red: " + switchError.message;
+            }
+        }
+    }
+
+    async function updateContractInstance() {
+        const addr = contractAddresses[currentChainId];
+        if (addr && addr !== `DIRECCION_CONTRATO_${currentChainId}`) {
+            contract = new ethers.Contract(addr, abi, signer);
+            document.getElementById('swapForm').style.display = "block";
+            document.getElementById('log').style.color = "black";
+            document.getElementById('log').innerText = "Listo para operar.";
+            
+            // Carga e imprime stock de venta disponible
+            try {
+                const swapPoolWei = await contract.swapPool();
+                const poolTokens = ethers.utils.formatEther(swapPoolWei);
+                document.getElementById('swapPoolAmount').innerText = parseFloat(poolTokens).toLocaleString();
+            } catch(e) {
+                console.error("Error al leer inventario de swap", e);
+            }
+            calculatePrice();
+        } else {
+            document.getElementById('swapForm').style.display = "none";
+            document.getElementById('log').style.color = "orange";
+            document.getElementById('log').innerText = "Contrato no configurado para esta red en el código.";
+        }
+    }
+
+    async function calculatePrice() {
+        const tokens = document.getElementById('tokenAmount').value;
+        if (tokens && tokens > 0 && contract) {
+            try {
+                const priceInWei = await contract.getCurrentPrice();
+                const priceInEth = parseFloat(ethers.utils.formatEther(priceInWei));
+                const total = tokens * priceInEth;
+                
+                if(priceInEth > 0.01) {
+                    document.getElementById('priceCalc').innerHTML = `Total a pagar: ${total.toFixed(4)} Moneda Nativa <br><span class="alert-price">⚠️ ¡Alerta! Precio subió un 2000% (Faltan menos de 5M de tokens)</span>`;
+                } else {
+                    document.getElementById('priceCalc').innerText = `Total a pagar: ${total.toFixed(4)} Moneda Nativa`;
+                }
+            } catch(e) {
+                console.error("Error consultando precio", e);
+            }
+        } else {
+            document.getElementById('priceCalc').innerText = `Total a pagar: 0.00 Moneda Nativa`;
+        }
+    }
+
+    async function buyTokens() {
+        const amount = document.getElementById('tokenAmount').value;
+        if (!amount || amount <= 0) return alert("Ingresa una cantidad válida.");
+
+        try {
+            document.getElementById('log').innerText = "Esperando confirmación...";
+            
+            const priceInWei = await contract.getCurrentPrice();
+            const priceInEth = parseFloat(ethers.utils.formatEther(priceInWei));
+            const totalCostInEth = (amount * priceInEth).toString();
+            
+            const tx = await contract.buyTokens(amount, {
+                value: ethers.utils.parseEther(totalCostInEth)
+            });
+
+            document.getElementById('log').innerText = "Procesando en blockchain...";
+            await tx.wait();
+            document.getElementById('log').style.color = "green";
+            document.getElementById('log').innerText = `¡Éxito! Compraste ${amount} AWERT.`;
+            await updateContractInstance(); // Recarga inventarios
+        } catch (err) {
+            document.getElementById('log').style.color = "red";
+            document.getElementById('log').innerText = "Error: " + (err.data?.message || err.message);
+        }
+    }
+</script>
+</body>
+</html>
