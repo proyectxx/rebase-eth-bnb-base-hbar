@@ -1,4 +1,181 @@
-<!-- ... Todo tu código HTML previo y el panel de admin ... -->
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Faucet AWERT</title>
+    <script src="https://cloudflare.com"></script>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: #f4f7f6; }
+        .card { background: white; padding: 30px; border-radius: 10px; display: inline-block; box-shadow: 0 4px 8px rgba(0,0,0,0.1); max-width: 450px; width: 100%; }
+        button { background: #007bff; color: white; border: none; padding: 12px 20px; border-radius: 5px; cursor: pointer; font-size: 14px; margin: 5px; font-weight: bold; }
+        button:hover { background: #0056b3; }
+        .net-btn { background: #6c757d; }
+        .net-btn:hover { background: #5a6268; }
+        .network-section { margin: 20px 0; padding: 15px; background: #eee; border-radius: 5px; }
+        .pool-info { margin: 15px 0; font-size: 16px; background: #e3f2fd; padding: 10px; border-radius: 5px; font-weight: bold; color: #0d47a1; }
+        .admin-section { margin-top: 30px; padding: 20px; background: #fff3e0; border: 2px dashed #ff9800; border-radius: 8px; display: none; }
+        .admin-section input { padding: 10px; width: 80%; margin-bottom: 10px; text-align: center; border-radius: 5px; border: 1px solid #ccc; }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h2>Reclamar 1,000 AWERT</h2>
+    <p>Condición: Reclamo cada 7 días.</p>
+    <p>Costo: Gas de red + 0.01 moneda nativa (ETH/BNB/HBAR)</p>
+    
+    <button id="connectBtn" onclick="connectWallet()">1. Conectar MetaMask</button>
+    
+    <div class="network-section">
+        <p style="margin: 0 0 10px 0; font-size: 14px; font-weight: bold;">2. Selecciona tu Red:</p>
+        <button class="net-btn" onclick="switchNetwork('ethereum')">Ethereum</button>
+        <button class="net-btn" onclick="switchNetwork('base')">Base</button>
+        <button class="net-btn" onclick="switchNetwork('bsc')">Binance (BSC)</button>
+        <button class="net-btn" onclick="switchNetwork('hedera')">Hedera EVM</button>
+    </div>
+
+    <div id="poolDisplay" class="pool-info" style="display:none;">
+        Fondo Restante Faucet: <span id="faucetPoolAmount">0</span> AWERT
+    </div>
+
+    <button id="claimBtn" onclick="claimTokens()" style="display:none; background: #28a745; width: 90%;">3. Reclamar Faucet</button>
+    <p id="status" style="font-weight: bold; margin-top: 15px;"></p>
+
+    <!-- SECCIÓN EXCLUSIVA PARA EL ADMINISTRADOR -->
+    <div id="adminPanel" class="admin-section">
+        <h3 style="color: #e65100; margin-top: 0;">Panel de Control Propietario</h3>
+        <p style="font-size: 13px; color: #555;">Retirar tokens AWERT de las piscinas del contrato de vuelta a tu wallet.</p>
+        <input type="number" id="withdrawAmount" placeholder="Cantidad de AWERT a retirar">
+        <button onclick="adminWithdraw()" style="background: #ff9800; width: 86%;">Retirar del Contrato</button>
+    </div>
+</div>
+
+<script>
+    const contractAddresses = {
+        '1': 'DIRECCION_CONTRATO_ETHEREUM',
+        '8453': 'DIRECCION_CONTRATO_BASE',
+        '56': 'DIRECCION_CONTRATO_BSC',
+        '295': 'DIRECCION_CONTRATO_HEDERA'
+    };
+
+    const networks = {
+        ethereum: { chainId: '0x1', chainName: 'Ethereum Mainnet' },
+        base: { chainId: '0x2105', chainName: 'Base', nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 }, rpcUrls: ['https://base.org'], blockExplorerUrls: ['https://basescan.org'] },
+        bsc: { chainId: '0x38', chainName: 'BNB Smart Chain', nativeCurrency: { name: 'BNB', symbol: 'BNB', decimals: 18 }, rpcUrls: ['https://binance.org'], blockExplorerUrls: ['https://bscscan.com'] },
+        hedera: { chainId: '0x127', chainName: 'Hedera Mainnet EVM', nativeCurrency: { name: 'HBAR', symbol: 'HBAR', decimals: 18 }, rpcUrls: ['https://hashio.io'], blockExplorerUrls: ['https://hashscan.io'] }
+    };
+
+    const contractABI = [
+        "function claimFaucet() public payable",
+        "function faucetPool() public view returns (uint256)",
+        "function owner() public view returns (address)",
+        "function withdrawContractTokens(uint256 amount) public"
+    ];
+    let provider, signer, contract, currentChainId, userAddress;
+
+    async function connectWallet() {
+        if (window.ethereum) {
+            try {
+                await window.ethereum.request({ method: 'eth_requestAccounts' });
+                provider = new ethers.providers.Web3Provider(window.ethereum);
+                const networkInfo = await provider.getNetwork();
+                currentChainId = networkInfo.chainId.toString();
+                
+                signer = provider.getSigner();
+                userAddress = await signer.getAddress();
+                
+                document.getElementById('connectBtn').innerText = "Conectado: " + userAddress.substring(0,6) + "...";
+                await updateContractInstance();
+            } catch (err) {
+                document.getElementById('status').innerText = "Error al conectar: " + err.message;
+            }
+        } else {
+            document.getElementById('status').innerText = "Instala MetaMask por favor.";
+        }
+    }
+
+    async function switchNetwork(networkKey) {
+        if (!window.ethereum) return alert("MetaMask no detectado.");
+        const net = networks[networkKey];
+        try {
+            await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: net.chainId }] });
+            setTimeout(connectWallet, 500);
+        } catch (switchError) {
+            if (switchError.code === 4902 && networkKey !== 'ethereum') {
+                try {
+                    await window.ethereum.request({ method: 'wallet_addEthereumChain', params: [net] });
+                    setTimeout(connectWallet, 500);
+                } catch (addError) {
+                    document.getElementById('status').innerText = "Error al agregar red: " + addError.message;
+                }
+            } else {
+                document.getElementById('status').innerText = "Error al cambiar de red: " + switchError.message;
+            }
+        }
+    }
+
+    async function updateContractInstance() {
+        const addr = contractAddresses[currentChainId];
+        if (addr && addr !== `DIRECCION_CONTRATO_${currentChainId}`) {
+            contract = new ethers.Contract(addr, contractABI, signer);
+            document.getElementById('claimBtn').style.display = "inline-block";
+            document.getElementById('status').style.color = "black";
+            document.getElementById('status').innerText = `Red activa detectada con éxito.`;
+            
+            try {
+                const poolWei = await contract.faucetPool();
+                document.getElementById('faucetPoolAmount').innerText = parseFloat(ethers.utils.formatEther(poolWei)).toLocaleString();
+                document.getElementById('poolDisplay').style.display = "block";
+
+                // Verificar si la wallet conectada es el dueño del contrato
+                const contractOwner = await contract.owner();
+                if(userAddress.toLowerCase() === contractOwner.toLowerCase()) {
+                    document.getElementById('adminPanel').style.display = "block";
+                } else {
+                    document.getElementById('adminPanel').style.display = "none";
+                }
+            } catch(e) {
+                console.error(e);
+            }
+        } else {
+            document.getElementById('claimBtn').style.display = "none";
+            document.getElementById('poolDisplay').style.display = "none";
+            document.getElementById('adminPanel').style.display = "none";
+            document.getElementById('status').style.color = "orange";
+            document.getElementById('status').innerText = "Contrato no configurado para esta red en el código.";
+        }
+    }
+
+    async function claimTokens() {
+        try {
+            document.getElementById('status').innerText = "Procesando transacción en blockchain...";
+            const tx = await contract.claimFaucet({ value: ethers.utils.parseEther("0.01") });
+            await tx.wait();
+            document.getElementById('status').style.color = "green";
+            document.getElementById('status').innerText = "¡Éxito! 1,000 AWERT reclamados correctamente.";
+            await updateContractInstance();
+        } catch (err) {
+            document.getElementById('status').style.color = "red";
+            document.getElementById('status').innerText = "Error: " + (err.data?.message || err.message);
+        }
+    }
+
+    async function adminWithdraw() {
+        const amount = document.getElementById('withdrawAmount').value;
+        if(!amount || amount <= 0) return alert("Ingresa un monto válido.");
+        try {
+            document.getElementById('status').innerText = "Procesando retiro de administrador...";
+            const tx = await contract.withdrawContractTokens(amount);
+            await tx.wait();
+            document.getElementById('status').style.color = "green";
+            document.getElementById('status').innerText = `Retiro exitoso de ${amount} AWERT hacia tu billetera.`;
+            await updateContractInstance();
+        } catch(err) {
+            alert("Error en el retiro: " + (err.data?.message || err.message));
+        }
+    }
+</script>
+    <!-- ... Todo tu código HTML previo y el panel de admin ... -->
     </div>
 </div>
 
@@ -7,3 +184,4 @@
 <script src="faucet.js"></script> 
 </body>
 </html>
+
